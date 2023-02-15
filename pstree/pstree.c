@@ -21,6 +21,7 @@ typedef struct {
   int ppid;
 } MyProcInfo;
 MyProcInfo* processStat(char* filename);
+void get_process_info(const pid_t pid, MyProcInfo* info);
 /**
  * Based on Linux 5.15.0-56-generic, Ubuntu 22.04
  * /proc/[pid], for pid
@@ -58,14 +59,9 @@ int printOneProcess(char* pid, int tab) {
   int length = sizeof(DIR_PROC) + sizeof(FILE_STAT) + sizeof(pid);
   char stat_s[length];
   sprintf(stat_s, DIR_PROC"%s"FILE_STAT, pid);
-  /*
-  int fd = open(stat_s, O_RDONLY);
-  if(fd == -1) {
-    return -1;
-  }
-  */
   // read 'stat'
-  MyProcInfo* info = processStat(stat_s);
+  MyProcInfo* info = malloc(sizeof(MyProcInfo));
+  get_process_info(pidDec, info);
   printf("%d(%d): %s\n", info->pid, info->ppid, info->name);
   return 0;
 }
@@ -89,12 +85,69 @@ int pidstr2int(char* str) {
   return val;
 }
 
-MyProcInfo* processStat(char* filename) {
-  FILE* thefile = fopen(filename, "r");
-  if(thefile == NULL) {
-    return NULL;
-  }
-  MyProcInfo* info = malloc(sizeof(MyProcInfo));
-  fscanf(thefile, "%d (%*[^)]%*[)] %c %d ", &info->pid, info->name, info->stat, &info->ppid);
-  return info;
+/*
+ *  [start, end)
+ */
+char* my_strncpy(char *dest, const char *src, int start, int end) {
+    int i;
+    for (i = 0; start < end && src[start] != '\0'; i++, start++) {
+      dest[i] = src[start];
+    }
+    dest[i] = '\0';
+    return dest;
+}
+
+/*
+* 9496 ((sd-pam)) S 9495 9495 9495 0 -1 1077936448 52 0 0 0 0 0 0 0 20 0 1 0 153378 174600192 1271 18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+*/
+void get_process_info(const pid_t pid, MyProcInfo* info) {
+	char buffer[BUFSIZ];
+	sprintf(buffer, DIR_PROC"%d"FILE_STAT, pid);
+	FILE* fp = fopen(buffer, "r");
+	if (fp) {
+		size_t size = fread(buffer, sizeof (char), sizeof (buffer), fp);
+		if (size > 0) {
+      char pid_s[6];
+      char ppid_s[6];
+      char name_s[BUFSIZ];
+      int i = 0;
+      int head = 0;
+      while(buffer[++i] != '\0') {
+        if(buffer[i] == ' ') break;
+      }
+      my_strncpy(pid_s, buffer, 0, i);
+			info->pid = pidstr2int(pid_s); // (1) pid  %d
+
+      if(buffer[++i] != '(') {
+        perror("Read stat format error\n");
+      }
+      head = ++i;
+
+      /*
+      * There is a assmuption that process name(maybe command) is complete parentheses 
+      */ 
+      int left_p_count = 1;
+      while(buffer[i] != '\0') {
+        if(buffer[i] == '(') left_p_count++;
+        if(buffer[i] == ')') left_p_count--;
+        if(left_p_count == 0) break;
+        i++;
+      }
+      my_strncpy(name_s, buffer, head, i);
+			info->name = name_s; // (2) comm  %s
+      head = ++i;
+
+      while(buffer[++i] != '\0') {
+        if(buffer[i] == ' ') break;
+      }
+      head = ++i;
+			
+      while(buffer[++i] != '\0') {
+        if(buffer[i] == ' ') break;
+      }
+      my_strncpy(ppid_s, buffer, head, i);
+			info->ppid = pidstr2int(ppid_s); // (4) ppid  %d
+		}
+		fclose(fp);
+	}
 }
