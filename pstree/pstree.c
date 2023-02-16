@@ -8,20 +8,38 @@
 #include <string.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
-const char LINE = '-';
-const char TREE = '|';
-const int TAB = 4;
-int printOneProcess(char* pid, int tab);
 int pidstr2int(char* str); 
 typedef struct {
   int pid;
   char* name;
-  char* stat;
   int ppid;
 } MyProcInfo;
+// https://stackoverflow.com/questions/1675351/typedef-struct-vs-struct-definitions
+typedef struct Node {
+  MyProcInfo* this;
+  struct Node* next;
+  struct Node* child;
+} Node;
 MyProcInfo* processStat(char* filename);
+MyProcInfo* readOneProcess(char* pid);
 void get_process_info(const pid_t pid, MyProcInfo* info);
+Node* list2tree(Node* listHead);
+int add2tree(Node* treeHead, MyProcInfo* item);
+void printTree(Node* treeHead, size_t prefix);
+Node* initANode(MyProcInfo* info);
+void handleArgs(int argc, char *argv[]);
+char* version_msg = "***** Custom pstree *****\n -p, --show-pids:  show pid\n -n, --numeric-sort: asc sort\n -V --version: version info\n";
+char v_short[] = "-V";
+char v_long[] = "--version";
+bool pidFlag = false;
+char p_short[] = "-p";
+char p_long[] = "--show-pids";
+// Ofcourse I did not implment this feature.
+bool ascFlag = false;
+char n_short[] = "-n";
+char n_long[] = "--numeric-sort";
 /**
  * Based on Linux 5.15.0-56-generic, Ubuntu 22.04
  * /proc/[pid], for pid
@@ -32,28 +50,54 @@ void get_process_info(const pid_t pid, MyProcInfo* info);
 int main(int argc, char *argv[]) {
   for (int i = 0; i < argc; i++) {
     assert(argv[i]);
-    printf("argv[%d] = %s\n", i, argv[i]);
+    // printf("argv[%d] = %s\n", i, argv[i]);
   }
   assert(!argv[argc]);
+  handleArgs(argc, argv);
 
   struct dirent* entry;
   DIR* procdir = opendir(DIR_PROC);
   if(procdir == NULL) {
     perror("opendir() error");
   }
+  Node* listHead = malloc(sizeof(Node));
+  Node* now = listHead;
   while ((entry = readdir(procdir)) != NULL) {
-    printOneProcess(entry->d_name, 4);
+    MyProcInfo* info = readOneProcess(entry->d_name);
+    if(info == NULL) continue;
+    Node* n = initANode(info);
+    now->next = n;
+    now = n;
   }
+  Node* treeHead = list2tree(listHead);
+  printTree(treeHead, 0);
   closedir(procdir);
   return 0;
 }
 
-int printOneProcess(char* pid, int tab) {
+void handleArgs(int argc, char *argv[]) {
+  for(int i = 0; i < argc; i++) {
+    if(strcmp(v_short, argv[i]) == 0 || strcmp(v_long, argv[i]) == 0) {
+      fputs(version_msg, stdout); 
+      exit(0);
+    }
+    if(strcmp(n_short, argv[i]) == 0 || strcmp(n_long, argv[i]) == 0) {
+      ascFlag = true;
+      continue;
+    }
+    if(strcmp(p_short, argv[i]) == 0 || strcmp(p_long, argv[i]) == 0) {
+      pidFlag = true;
+      continue;
+    }
+  }
+}
+
+MyProcInfo* readOneProcess(char* pid) {
   // some of dir have 'stat' file but not the pid dir we want, 
   // so I have to determine whether it is a number.
   int pidDec = pidstr2int(pid);
   if(pidDec < 0) {
-    return -2;
+    return NULL;
   }
   // 'stat' file exists
   int length = sizeof(DIR_PROC) + sizeof(FILE_STAT) + sizeof(pid);
@@ -62,8 +106,8 @@ int printOneProcess(char* pid, int tab) {
   // read 'stat'
   MyProcInfo* info = malloc(sizeof(MyProcInfo));
   get_process_info(pidDec, info);
-  printf("%d(%d): %s\n", info->pid, info->ppid, info->name);
-  return 0;
+  // printf("%d(%d): %s\n", info->pid, info->ppid, info->name);
+  return info;
 }
 
 /**
@@ -109,7 +153,6 @@ void get_process_info(const pid_t pid, MyProcInfo* info) {
 		if (size > 0) {
       char pid_s[6];
       char ppid_s[6];
-      char name_s[BUFSIZ];
       int i = 0;
       int head = 0;
       while(buffer[++i] != '\0') {
@@ -133,6 +176,7 @@ void get_process_info(const pid_t pid, MyProcInfo* info) {
         if(left_p_count == 0) break;
         i++;
       }
+      char* name_s = malloc(sizeof(char) * (i - head) + 1);
       my_strncpy(name_s, buffer, head, i);
 			info->name = name_s; // (2) comm  %s
       head = ++i;
@@ -150,4 +194,86 @@ void get_process_info(const pid_t pid, MyProcInfo* info) {
 		}
 		fclose(fp);
 	}
+}
+
+Node* initANode(MyProcInfo* info) {
+  Node* n = malloc(sizeof(Node));
+  n->next = NULL;
+  n->child = NULL;
+  n->this = info;
+  return n;
+}
+
+Node* list2tree(Node* listHead) {
+  // These is no pid 0 process
+  MyProcInfo* zero = malloc(sizeof(MyProcInfo));
+  zero->pid = 0;
+  Node* treeHead = initANode(zero);
+  Node* p = listHead->next;
+  while(p != NULL) {
+    add2tree(treeHead, p->this);
+    p = p->next;
+  }
+  return treeHead;
+}
+
+int add2tree(Node* treeHead, MyProcInfo* item) {
+  if(treeHead == NULL || treeHead->this == NULL) return -1;
+  if(treeHead->this->pid == item->ppid) {
+    if(treeHead->child == NULL) {
+      treeHead->child = initANode(item);
+      return 0;
+    } else {
+      Node* p = treeHead->child;
+      while(p->next != NULL) {
+        p = p->next;
+      }
+      p->next = initANode(item);
+      return 0;
+    }
+  } else {
+    if(add2tree(treeHead->child, item) == 0) return 0;
+    if(add2tree(treeHead->next, item) == 0) return 0;
+  }
+}
+
+// https://stackoverflow.com/questions/5770940/how-repeat-a-string-in-language-c
+char* str_repeat(char* str, size_t times) {
+    if (times < 1) return "";
+    char *ret = malloc(sizeof(str) * times + 1);
+    if (ret == NULL) return "";
+    strcpy(ret, str);
+    while (--times > 0) {
+        strcat(ret, str);
+    }
+    return ret;
+}
+
+void printTree(Node* treeHead, size_t prefix) {
+  if(treeHead == NULL) return;
+  MyProcInfo* info = treeHead->this;
+  if(info == NULL) return;
+
+  char* pid_s = "";
+  int pid_len = 0;
+  if(pidFlag) {
+    pid_len = snprintf( NULL, 0, "%d", info->pid );
+    pid_s = malloc( pid_len + 1 );
+    snprintf( pid_s, pid_len + 1, "%d", info->pid );
+  }
+  int name_len = 0;
+  if(info->name != NULL) {
+    name_len = strlen(info->name);
+  }
+  size_t len = pid_len + 2 + name_len + 1;
+
+  char* space = " ";
+  char* prefix_space = str_repeat(space, prefix); // len: prefix
+  char line[3] = "|--";
+
+  char* buffer = malloc(prefix + 3 + len + 1);
+	sprintf(buffer, "%s%s%s(%s)\n", prefix_space, line, pid_s, info->name);
+  fputs(buffer, stdout);
+  printTree(treeHead->child, prefix + 5);
+  printTree(treeHead->next, prefix);
 }
